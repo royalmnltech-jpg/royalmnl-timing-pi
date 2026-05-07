@@ -1,0 +1,115 @@
+---
+description: RoyalMNL timing node context and implementation update protocol
+globs: "{**/*.py,**/*.md}"
+alwaysApply: true
+---
+
+# RoyalMNL Timing Node Context Rule
+
+## Mission
+
+- `royalmnl-timing-pi` is the checkpoint timing-node service for RFID reads (Pi + reader).
+- The node is a read-and-push device: capture raw reads reliably and sync to backend; race logic stays server-side.
+
+## Required System Behavior (from timing contract)
+
+- One Pi timing node per checkpoint (start/finish/splits), connected to RFID reader.
+- Run headless as an autostart service (`systemd` target design).
+- Persist reads locally with crash-safe behavior; operation must continue when internet is down.
+- Queue and retry sync automatically when connectivity returns; do not lose reads across disconnects/restarts.
+- Push raw EPC + checkpoint ID + timestamp to backend; runner resolution is done by backend DB mapping.
+
+## Reader Integration Baseline (from `test_reader.py`)
+
+- Keep A0 frame command protocol compatibility and checksum behavior intact.
+- Preserve startup sequence intent: configure reader, run health checks, then enter continuous inventory polling.
+- Preserve inventory parsing behavior for `0x89`, `0x8A`, and `0x8B` responses, including done/error/tag frames.
+- Maintain reliable stream framing (`A0Framer`) and timeout-safe round draining.
+
+## Mandatory Context Update Rule
+
+- Every time a new implementation is added in this repo, update this rule file in the same PR/commit.
+- "New implementation" includes: new module/service, new device command flow, new persistence/sync behavior, or protocol handling changes.
+- Update must include:
+  1. What was added/changed.
+  2. Why it was added.
+  3. Impact on timing-node behavior (read path, storage, sync, or backend payload contract).
+  4. Any new config/env vars and defaults.
+
+## State Machine Model
+
+Reader state and network state must be **independent** parallel loops:
+- `Reader state:  DISCONNECTED → CONNECTING → CONFIGURING → CAPTURING → RECONNECTING`
+- `Network state: OFFLINE → PROBING → ONLINE → DEGRADED`
+- Capture runs when `reader=CAPTURING` regardless of network state.
+- Sync runs when `network=ONLINE` regardless of reader state.
+- Neither loop must block the other.
+
+## Boot-time Preflight Checks
+
+Before entering capture mode, the node must:
+
+1. **NTP/clock trust check**: Verify system time is NTP-synced and not drifted to epoch (1970). Do NOT block capture; instead mark each read with `clock_source=trusted|untrusted`. Auto-sync only trusted-clock reads; untrusted reads stay queued and require operator action or manual re-sync promotion.
+2. **Checkpoint preflight**: Confirm `checkpointId` exists and is active for `timingEventId` via backend preflight. If checkpoint is unknown or inactive, enter `DEGRADED` mode with loud log + retry every 30s. Still capture locally in this state — never lose reads due to control-plane config issues.
+
+## EPC Normalization Contract
+
+Pi must canonicalize every raw EPC exactly once before any deduplication, persistence, or push:
+
+```python
+epc = raw_epc.strip().upper()
+```
+
+This must match the format stored in the registration DB (`rfid_tag` column). Mismatches cause `EPC_NOT_MAPPED` silently. Verify against actual tag data before first race.
+
+## `readAt` Precision Contract
+
+- Always UTC ISO-8601 with millisecond precision: `YYYY-MM-DDTHH:MM:SS.mmmZ`
+- **On retry/replay, always reuse the original `readAt` from the local SQLite row.** Never regenerate the timestamp on retry — server dedupe key includes exact `readAt` string; regenerating creates duplicate rows.
+
+## Local Time-Window Deduplication
+
+Pi is the primary dedup filter before any persist or sync:
+
+- Dedupe key: `(timingEventId, checkpointId, epc_norm)`
+- Rule: drop read if `monotonic_now - last_seen_mono < DEDUPE_WINDOW_SEC`
+- Default: `DEDUPE_WINDOW_SEC=20` (finish/split mats); `30–60` for start mats with high linger
+- Store `last_seen_mono` in-memory map; optionally persist `last_seen` table for reboot continuity
+- `DEDUPE_WINDOW_SEC=0` disables deduplication (test/debug only)
+
+## Outbox Row Lifecycle and Dead-Letter Policy
+
+| HTTP Response | Action |
+|---|---|
+| `200` accepted | Mark row `sent` |
+| `200` duplicate | Mark row `sent` (idempotent) |
+| `401 INVALID_API_KEY` | Pause all sync, raise critical alert, do not dead-letter |
+| `422 SEMANTICALLY_INVALID_TIMING_READ` with `EVENT_NOT_INGESTIBLE` | Surface as loud operator alert, do not silent dead-letter |
+| Other `422` | Mark row `dead_letter` |
+| `429 / 5xx / network error` | Exponential backoff + jitter, retry |
+
+Dead-letter caps:
+- Max `10,000` dead-letter rows. Oldest auto-purged when exceeded.
+- Dead-letter rows older than `24h` auto-purged.
+- Dead-letter reason code must be logged explicitly for operator review.
+
+## Shutdown Safety
+
+- On `SIGTERM/SIGINT`: set a shutdown flag, finish current in-flight SQLite transaction, flush log buffer, then exit cleanly.
+- Do not `sys.exit()` mid-write. SQLite WAL helps but graceful drain is still required.
+- Single-instance lock file (`/var/run/timing-node.lock`) must be released on exit.
+
+## Operational Feedback (GPIO)
+
+Provide physical status feedback for race-day operators standing at the mat (no SSH access during race):
+- **Solid green LED**: backend connected, queue empty or low.
+- **Blinking green**: tag read captured locally.
+- **Red LED / buzzer**: backend disconnected, queue growing, or critical error.
+- GPIO is optional if hardware not provisioned; degrade gracefully if GPIO unavailable.
+
+## Guardrails
+
+- Do not move race ranking/category/result logic into the Pi node.
+- Do not remove offline-first guarantees or local durability requirements.
+- Keep logs and error handling explicit for field debugging on race day hardware.
+- Do not block local capture because of network/config issues — offline capture is always the higher priority.
