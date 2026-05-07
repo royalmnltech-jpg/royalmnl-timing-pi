@@ -26,6 +26,17 @@ alwaysApply: true
 - Preserve inventory parsing behavior for `0x89`, `0x8A`, and `0x8B` responses, including done/error/tag frames.
 - Maintain reliable stream framing (`A0Framer`) and timeout-safe round draining.
 
+## Critical Boot/Write Ordering (must not regress)
+
+- Initialize local durability stack (**SQLite + WAL + required tables/indexes**) **before** entering reader connect/configure loops.
+- Reader connect/retry is allowed to run forever, but write path must already be ready before first accepted tag.
+- Ingest write order is strict:
+  1. normalize EPC
+  2. apply local time-window dedupe
+  3. persist accepted read to local SQLite
+  4. enqueue for sync worker
+- Never POST directly from reader callback without local durable commit first.
+
 ## Mandatory Context Update Rule
 
 - Every time a new implementation is added in this repo, update this rule file in the same PR/commit.
@@ -47,10 +58,10 @@ Reader state and network state must be **independent** parallel loops:
 
 ## Boot-time Preflight Checks
 
-Before entering capture mode, the node must:
+Before / during capture, the node must:
 
-1. **NTP/clock trust check**: Verify system time is NTP-synced and not drifted to epoch (1970). Do NOT block capture; instead mark each read with `clock_source=trusted|untrusted`. Auto-sync only trusted-clock reads; untrusted reads stay queued and require operator action or manual re-sync promotion.
-2. **Checkpoint preflight**: Confirm `checkpointId` exists and is active for `timingEventId` via backend preflight. If checkpoint is unknown or inactive, enter `DEGRADED` mode with loud log + retry every 30s. Still capture locally in this state — never lose reads due to control-plane config issues.
+1. **NTP/clock trust check** (`clock_check.is_clock_trusted`): Year sanity + `timedatectl` NTP when available. Do NOT block capture; persist `clock_untrusted` in `outbox` / `raw` and still push (never silent drop).
+2. **Assignment preflight** (`GET /api/v1/timing/nodes/:timingNodeId/assignment` with `x-api-key`): Resolves `timingEventId` + `checkpointId` (checkpoint code) from `TimingCheckpoint.timing_node_id` for events in `setup|live`. If unassigned, `network_state=DEGRADED` but reader keeps capturing; rows use `assignment_pending=1` until backfill after assignment. Poll: `ASSIGNMENT_POLL_SEC` (default 5s) when not fully assigned; `ASSIGNMENT_POLL_STABLE_SEC` (default 20s) when `checkpoint_valid`.
 
 ## EPC Normalization Contract
 
@@ -106,6 +117,16 @@ Provide physical status feedback for race-day operators standing at the mat (no 
 - **Blinking green**: tag read captured locally.
 - **Red LED / buzzer**: backend disconnected, queue growing, or critical error.
 - GPIO is optional if hardware not provisioned; degrade gracefully if GPIO unavailable.
+
+## Current implementation (skeleton)
+
+- **Entry:** `main.py` — loads optional `/etc/royalmnl-timing-node.env` via `config.load_env_overlays()`, validates `TIMING_NODE_ID` + `TIMING_API_BASE_URL` + `TIMING_API_KEY`, acquires lock `TIMING_LOCK_FILE` (default `/var/run/timing-node.lock`), opens SQLite at `TIMING_DB_PATH` (default `~/.royalmnl-timing/outbox.db`), runs clock check, starts **reader** + **network** daemon threads.
+- **State:** `node_state.py` — `NodeState` with `ReaderState` / `NetworkState` enums; thread-safe getters/setters.
+- **Config:** `config.py` — env keys: `READER_IP`, `READER_PORT`, `DEDUPE_WINDOW_SEC`, `ASSIGNMENT_POLL_SEC`, `ASSIGNMENT_POLL_STABLE_SEC`, `TIMING_LOG_LEVEL`, `TIMING_DB_PATH`, `TIMING_LOCK_FILE`.
+- **DB:** `db.py` — `meta`, `reads`, `outbox` tables; WAL; `insert_tag_read`, `backfill_assignment` (when UI assigns node to checkpoint).
+- **Reader:** `reader_loop.py` + `reader_protocol.py` — A0 protocol from `test_reader` baseline; time-window dedupe; writes to outbox.
+- **Network:** `network_loop.py` — `GET /health` then assignment endpoint; exponential backoff on failure; backfills pending rows when assignment appears.
+- **Not yet implemented:** HTTP sync worker (POST `/read` or bulk), dead-letter cap job, GPIO, graceful SQLite drain on SIGTERM (flag exists; full drain TBD).
 
 ## Guardrails
 
