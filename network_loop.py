@@ -57,9 +57,11 @@ def run_network_loop(
     prev_event: Optional[str] = None
     prev_cp: Optional[str] = None
     prev_ver: Optional[int] = None
+    prev_net_state: Optional[NetworkState] = None
 
     while not state.is_shutdown_requested():
         state.set_network_state(NetworkState.PROBING)
+        log.debug("Probing backend: %s", health_url)
         try:
             hreq = urllib.request.Request(health_url, method="GET")
             with urllib.request.urlopen(hreq, timeout=10.0) as hresp:
@@ -72,6 +74,12 @@ def run_network_loop(
                 raise RuntimeError(f"assignment HTTP {status}")
 
             data = payload.get("data") if isinstance(payload, dict) else None
+
+            if isinstance(data, dict) and data.get("shutdownRequested"):
+                log.warning("OS poweroff requested by server — draining and shutting down")
+                state.request_os_poweroff()
+                break
+
             assignment = data.get("assignment") if isinstance(data, dict) else None
 
             if assignment is None:
@@ -82,8 +90,13 @@ def run_network_loop(
                     checkpoint_valid=False,
                     assignment_pending=True,
                 )
-                state.set_network_state(NetworkState.DEGRADED)
-                log.warning("No assignment for node %s", cfg.timing_node_id)
+                new_net_state = NetworkState.DEGRADED
+                state.set_network_state(new_net_state)
+                if prev_net_state != new_net_state:
+                    log.info("Backend reachable — no assignment for node %s", cfg.timing_node_id)
+                else:
+                    log.warning("No assignment for node %s", cfg.timing_node_id)
+                prev_net_state = new_net_state
             else:
                 te = assignment.get("timingEventId")
                 cp = assignment.get("checkpointId")
@@ -112,7 +125,11 @@ def run_network_loop(
                         checkpoint_valid=True,
                         assignment_pending=False,
                     )
-                    state.set_network_state(NetworkState.ONLINE)
+                    new_net_state = NetworkState.ONLINE
+                    state.set_network_state(new_net_state)
+                    if prev_net_state != new_net_state:
+                        log.info("Backend ONLINE — assigned event=%s checkpoint=%s v=%s", te, cp, ver)
+                    prev_net_state = new_net_state
 
                     with db_lock:
                         conn = conn_holder.get("conn")
@@ -120,12 +137,18 @@ def run_network_loop(
                             backfill_assignment(conn, timing_event_id=te, checkpoint_id=cp, log=log)
                 else:
                     state.set_network_state(NetworkState.DEGRADED)
+                    prev_net_state = NetworkState.DEGRADED
 
             backoff = 2.0
             state.touch_assignment_check(time.monotonic())
 
         except Exception as e:
-            log.warning("Network poll failed: %s", e)
+            new_net_state = NetworkState.OFFLINE
+            if prev_net_state != new_net_state:
+                log.warning("Backend OFFLINE: %s", e)
+            else:
+                log.debug("Backend still offline: %s", e)
+            prev_net_state = new_net_state
             state.set_network_state(NetworkState.OFFLINE)
             time.sleep(_jitter(min(backoff, 60.0)))
             backoff = min(backoff * 2.0, 60.0)

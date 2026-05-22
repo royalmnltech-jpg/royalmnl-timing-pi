@@ -9,6 +9,8 @@ from typing import Optional
 
 
 DEFAULT_ENV_PATH = Path("/etc/royalmnl-timing-node.env")
+# Repo-local .env for local development (takes priority over system env file)
+DEV_ENV_PATH = Path(__file__).parent / ".env"
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:
@@ -30,10 +32,15 @@ def _parse_env_file(path: Path) -> dict[str, str]:
 
 
 def load_env_overlays() -> None:
-    """Merge file env into os.environ without overwriting existing vars."""
-    file_vars = _parse_env_file(DEFAULT_ENV_PATH)
-    for k, v in file_vars.items():
-        os.environ.setdefault(k, v)
+    """Merge file env into os.environ without overwriting existing vars.
+
+    Load order (first file wins per key):
+      1. .env in repo root  — local dev on Windows/Mac
+      2. /etc/royalmnl-timing-node.env — production Pi
+    """
+    for path in (DEV_ENV_PATH, DEFAULT_ENV_PATH):
+        for k, v in _parse_env_file(path).items():
+            os.environ.setdefault(k, v)
 
 
 @dataclass(frozen=True)
@@ -49,6 +56,9 @@ class NodeConfig:
     timing_db_path: str
     lock_file_path: str
     log_level: str
+    sync_batch_size: int
+    sync_interval_sec: float
+    sync_max_retries: int
 
 
 def load_config() -> NodeConfig:
@@ -70,6 +80,10 @@ def load_config() -> NodeConfig:
     lock_file = os.environ.get("TIMING_LOCK_FILE", "/var/run/timing-node.lock").strip()
     log_level = os.environ.get("TIMING_LOG_LEVEL", "INFO").strip().upper()
 
+    sync_batch_size = int(os.environ.get("SYNC_BATCH_SIZE", "50"))
+    sync_interval_sec = float(os.environ.get("SYNC_INTERVAL_SEC", "1.5"))
+    sync_max_retries = int(os.environ.get("SYNC_MAX_RETRIES", "5"))
+
     return NodeConfig(
         timing_node_id=timing_node_id,
         timing_api_base_url=base,
@@ -82,6 +96,9 @@ def load_config() -> NodeConfig:
         timing_db_path=timing_db_path,
         lock_file_path=lock_file,
         log_level=log_level,
+        sync_batch_size=sync_batch_size,
+        sync_interval_sec=sync_interval_sec,
+        sync_max_retries=sync_max_retries,
     )
 
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -17,6 +18,7 @@ from db import connect, init_schema
 from network_loop import run_network_loop
 from node_state import NodeState
 from reader_loop import run_reader_loop
+from sync_loop import run_sync_loop
 
 try:
     import fcntl
@@ -94,9 +96,16 @@ def main() -> None:
         name="network",
         daemon=True,
     )
+    t_sync = threading.Thread(
+        target=run_sync_loop,
+        args=(state, cfg, conn_holder, db_lock, log),
+        name="sync",
+        daemon=True,
+    )
 
     t_reader.start()
     t_network.start()
+    t_sync.start()
 
     try:
         while not state.is_shutdown_requested():
@@ -105,6 +114,12 @@ def main() -> None:
         state.request_shutdown()
         t_reader.join(timeout=15.0)
         t_network.join(timeout=15.0)
+        t_sync.join(timeout=15.0)
+        try:
+            conn.execute("PRAGMA wal_checkpoint(RESTART)")
+            conn.commit()
+        except Exception:
+            log.exception("WAL checkpoint")
         try:
             conn.close()
         except Exception:
@@ -114,6 +129,9 @@ def main() -> None:
                 lock_f.close()
             except OSError:
                 pass
+        if state.is_os_poweroff_requested():
+            log.warning("Initiating OS poweroff")
+            subprocess.run(["sudo", "systemctl", "poweroff"], check=False)
 
 
 if __name__ == "__main__":

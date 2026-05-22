@@ -123,6 +123,52 @@ def insert_tag_read(
     return oid
 
 
+def get_queued_for_sync(
+    conn: sqlite3.Connection,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Return up to `limit` outbox rows that are ready to sync to the backend."""
+    cur = conn.execute(
+        """
+        SELECT id, epc, read_at, timing_event_id, checkpoint_id, raw_json
+        FROM outbox
+        WHERE status = 'queued' AND assignment_pending = 0
+        ORDER BY read_at ASC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    rows = cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_read_sent(conn: sqlite3.Connection, row_id: str) -> None:
+    """Mark an outbox row as successfully synced."""
+    conn.execute(
+        "UPDATE outbox SET status = 'sent', sent_at = ? WHERE id = ?",
+        (utc_now_iso_ms(), row_id),
+    )
+
+
+def mark_read_dead(conn: sqlite3.Connection, row_id: str, reason: str) -> None:
+    """Move an outbox row to dead-letter state (non-retryable failure)."""
+    conn.execute(
+        "UPDATE outbox SET status = 'dead', dead_letter_reason = ? WHERE id = ?",
+        (reason[:500], row_id),
+    )
+
+
+def increment_retry(conn: sqlite3.Connection, row_id: str) -> int:
+    """Increment retry_count; return the new count."""
+    conn.execute(
+        "UPDATE outbox SET retry_count = retry_count + 1 WHERE id = ?",
+        (row_id,),
+    )
+    cur = conn.execute("SELECT retry_count FROM outbox WHERE id = ?", (row_id,))
+    row = cur.fetchone()
+    return row["retry_count"] if row else 0
+
+
 def backfill_assignment(
     conn: sqlite3.Connection,
     *,

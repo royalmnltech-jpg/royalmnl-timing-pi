@@ -39,6 +39,7 @@ class NodeState:
     last_assignment_check_mono: float = 0.0
     last_health_ok_mono: float = 0.0
     shutdown_requested: bool = False
+    os_poweroff_requested: bool = False
 
     def set_reader_state(self, state: ReaderState) -> None:
         with self.lock:
@@ -103,6 +104,15 @@ class NodeState:
     def is_shutdown_requested(self) -> bool:
         with self.lock:
             return self.shutdown_requested
+
+    def request_os_poweroff(self) -> None:
+        with self.lock:
+            self.shutdown_requested = True
+            self.os_poweroff_requested = True
+
+    def is_os_poweroff_requested(self) -> bool:
+        with self.lock:
+            return self.os_poweroff_requested
 
     def touch_assignment_check(self, mono: float) -> None:
         with self.lock:
