@@ -17,7 +17,12 @@ def _parse_env_file(path: Path) -> dict[str, str]:
     out: dict[str, str] = {}
     if not path.is_file():
         return out
-    for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except PermissionError:
+        print(f"[config] WARNING: cannot read {path} (permission denied) — skipping", flush=True)
+        return out
+    for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
