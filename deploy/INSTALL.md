@@ -5,27 +5,78 @@ via Raspberry Pi Imager (e.g. `royalmnl-1`, `royalmnl-2`).
 
 ---
 
-## 1 — Clone the repo
+## 1 — Set static IP on eth0 (reader subnet)
+
+The RFID reader is on `192.168.1.x`. The Pi's eth0 must be on the same subnet.
+wlan0 handles internet — no gateway needed on eth0.
+
+**Test first (temporary, lost on reboot):**
+
+```bash
+sudo ip addr flush dev eth0
+sudo ip addr add 192.168.1.10/24 dev eth0
+sudo ip link set eth0 up
+```
+
+**Verify connectivity to reader:**
+
+```bash
+ip -4 addr show eth0
+ip route get 192.168.1.200
+ping 192.168.1.200
+nc -vz 192.168.1.200 4000
+```
+
+**Make it persistent with NetworkManager** (Raspberry Pi OS Bookworm+):
+
+```bash
+# Find the eth0 connection profile name
+nmcli con show
+```
+
+Then modify the active connection (the one with a `DEVICE` assigned — typically `eth0`):
+
+```bash
+nmcli con mod "eth0" \
+  ipv4.method manual \
+  ipv4.addresses "192.168.1.10/24"
+
+nmcli con up "eth0"
+```
+
+Verify after applying:
+
+```bash
+ip -4 addr show eth0
+ping 192.168.1.200
+nc -vz 192.168.1.200 4000
+```
+
+> **Note:** `dhcpcd.conf` is the old method (Bullseye and earlier) — it has no effect on Bookworm.
+
+---
+
+## 2 — Clone the repo
 
 ```bash
 git clone https://github.com/royalmnl/royalmnl-timing-pi.git \
-    /home/<NODE_USER>/royalmnl-timing-pi
+    ~/royalmnl-timing-pi
 ```
 
 Verify:
 
 ```bash
-ls /home/<NODE_USER>/royalmnl-timing-pi/main.py
+ls ~/royalmnl-timing-pi/main.py
 ```
 
 ---
 
-## 2 — Create the env file
+## 3 — Create the env file
 
 Copy from the template and open for editing:
 
 ```bash
-sudo cp /home/<NODE_USER>/royalmnl-timing-pi/deploy/royalmnl-timing-node.env.template \
+sudo cp ~/royalmnl-timing-pi/deploy/royalmnl-timing-node.env.template \
         /etc/royalmnl-timing-node.env
 
 sudo chown root:root /etc/royalmnl-timing-node.env
@@ -43,7 +94,14 @@ TIMING_API_KEY=<your-api-key>
 TIMING_DB_PATH=/home/<NODE_USER>/.royalmnl-timing/outbox.db
 ```
 
-Verify:
+Create the DB directory:
+
+```bash
+mkdir -p ~/.royalmnl-timing
+chmod 700 ~/.royalmnl-timing
+```
+
+Verify the env file:
 
 ```bash
 sudo cat /etc/royalmnl-timing-node.env
@@ -51,25 +109,24 @@ sudo cat /etc/royalmnl-timing-node.env
 
 ---
 
-## 3 — Install the systemd unit
+## 4 — Install the systemd unit
 
-Replace `<NODE_USER>` in the service file with the actual username:
+Replace `<NODE_USER>` in the service file. Run while logged in as the node user — `$USER` expands automatically:
 
 ```bash
-sed -i "s/<NODE_USER>/royalmnl-1/g" \
-    /home/<NODE_USER>/royalmnl-timing-pi/deploy/royalmnl-timing-node.service
+sed -i "s/<NODE_USER>/$USER/g" ~/royalmnl-timing-pi/deploy/royalmnl-timing-node.service
 ```
 
 > **Or** open and edit manually:
 > ```bash
-> nano /home/<NODE_USER>/royalmnl-timing-pi/deploy/royalmnl-timing-node.service
+> nano ~/royalmnl-timing-pi/deploy/royalmnl-timing-node.service
 > ```
 > Replace every `<NODE_USER>` with the actual username, then save.
 
 Copy to systemd:
 
 ```bash
-sudo cp /home/<NODE_USER>/royalmnl-timing-pi/deploy/royalmnl-timing-node.service \
+sudo cp ~/royalmnl-timing-pi/deploy/royalmnl-timing-node.service \
         /etc/systemd/system/royalmnl-timing-node.service
 
 sudo systemctl daemon-reload
@@ -83,12 +140,12 @@ sudo systemctl cat royalmnl-timing-node.service
 
 ---
 
-## 4 — Pre-flight: manual run
+## 5 — Pre-flight: manual run
 
 Before enabling the service, run the app manually to confirm it starts:
 
 ```bash
-cd /home/<NODE_USER>/royalmnl-timing-pi
+cd ~/royalmnl-timing-pi
 export $(sudo cat /etc/royalmnl-timing-node.env | grep -v "^#" | xargs)
 python3 main.py
 ```
@@ -104,7 +161,7 @@ Press `Ctrl+C` to stop. Fix any errors before continuing.
 
 ---
 
-## 5 — Enable and start
+## 6 — Enable and start
 
 ```bash
 sudo systemctl enable royalmnl-timing-node.service
@@ -113,7 +170,7 @@ sudo systemctl start royalmnl-timing-node.service
 
 ---
 
-## 6 — Verify it's running
+## 7 — Verify it's running
 
 ```bash
 systemctl status royalmnl-timing-node.service --no-pager
@@ -134,7 +191,7 @@ INFO [timing-node] Backend ONLINE — assigned event=te_xxx checkpoint=... v=1
 
 ---
 
-## 7 — Live logs
+## 8 — Live logs
 
 ```bash
 # Follow live output:
@@ -149,7 +206,7 @@ journalctl -u royalmnl-timing-node -b
 
 ---
 
-## 8 — Stop / restart / disable
+## 9 — Stop / restart / disable
 
 ```bash
 sudo systemctl stop royalmnl-timing-node       # graceful drain (up to 75s)
@@ -159,10 +216,10 @@ sudo systemctl disable royalmnl-timing-node    # remove from boot
 
 ---
 
-## 9 — Update the software
+## 10 — Update the software
 
 ```bash
-cd /home/<NODE_USER>/royalmnl-timing-pi
+cd ~/royalmnl-timing-pi
 git pull
 sudo systemctl restart royalmnl-timing-node.service
 ```
@@ -176,7 +233,7 @@ journalctl -u royalmnl-timing-node.service -n 30 --no-pager
 
 ---
 
-## 10 — Adding or editing env vars
+## 11 — Adding or editing env vars
 
 To append new variables:
 
@@ -209,7 +266,7 @@ sudo nano /etc/royalmnl-timing-node.env
 
 ---
 
-## 11 — Migrating from an old setup
+## 12 — Migrating from an old setup
 
 ### From rc.local or cron @reboot
 
@@ -234,7 +291,7 @@ sudo pkill -f main.py
 
 If the unit was previously created via `systemctl edit --force --full`, it already exists
 at `/etc/systemd/system/royalmnl-timing-node.service`. Overwrite it with the `cp` command
-from Step 3, or edit it in place:
+from Step 4, or edit it in place:
 
 ```bash
 sudo systemctl edit --force --full royalmnl-timing-node.service
@@ -263,9 +320,11 @@ Run after first install and after any major software update:
 |---|---|
 | Service fails to start | `journalctl -u royalmnl-timing-node -n 50` — look for missing env vars or bad paths |
 | "TIMING_NODE_ID is required" loop | Edit `/etc/royalmnl-timing-node.env`, `sudo systemctl restart` |
-| Reader not connecting | Verify `READER_IP` and `READER_PORT`, confirm reader is on same LAN |
+| Reader not connecting | Verify `READER_IP` and `READER_PORT`; check eth0 IP with `ip -4 addr show eth0` |
+| Can't reach reader IP | Re-run Step 1; confirm `ping 192.168.1.200` and `nc -vz 192.168.1.200 4000` pass |
 | No assignment / DEGRADED | Check node is assigned a checkpoint in dashboard → Checkpoints & Nodes |
 | 401 sync errors | `TIMING_API_KEY` mismatch; update env file and restart |
 | 422 sync errors | Event not in `live` status; flip event live in dashboard |
-| DB path error on start | Confirm `TIMING_DB_PATH` has `<NODE_USER>` replaced and the directory is writable |
-| Unit shows wrong User= | Confirm `<NODE_USER>` was replaced in service file; run `sudo systemctl cat royalmnl-timing-node.service` |
+| DB path error on start | Confirm `mkdir -p ~/.royalmnl-timing` was run and `TIMING_DB_PATH` has no `<NODE_USER>` literal |
+| Unit shows wrong User= | Run `sed` from Step 4 again; verify with `sudo systemctl cat royalmnl-timing-node.service` |
+| eth0 IP lost after reboot | Persistent NM config not applied; re-run `nmcli con mod` from Step 1 |
