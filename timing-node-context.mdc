@@ -61,7 +61,7 @@ Reader state and network state must be **independent** parallel loops:
 Before / during capture, the node must:
 
 1. **NTP/clock trust check** (`clock_check.is_clock_trusted`): Year sanity + `timedatectl` NTP when available. Do NOT block capture; persist `clock_untrusted` in `outbox` / `raw` and still push (never silent drop).
-2. **Assignment preflight** (`GET /api/v1/timing/nodes/:timingNodeId/assignment` with `x-api-key`): Resolves `timingEventId` + `checkpointId` (checkpoint code) from `TimingCheckpoint.timing_node_id` for events in `setup|live`. If unassigned, `network_state=DEGRADED` but reader keeps capturing; rows use `assignment_pending=1` until backfill after assignment. Poll: `ASSIGNMENT_POLL_SEC` (default 5s) when not fully assigned; `ASSIGNMENT_POLL_STABLE_SEC` (default 20s) when `checkpoint_valid`.
+2. **Assignment preflight** (`GET /api/v1/timing/nodes/:timingNodeId/assignment?outboxDepth=<n>&lastSyncAt=<iso>` with `x-api-key`): Resolves `timingEventId` + `checkpointId` (checkpoint code) from `TimingCheckpoint.timing_node_id` for events in `setup|live`. If unassigned, `network_state=DEGRADED` but reader keeps capturing; rows use `assignment_pending=1` until backfill after assignment. Poll: `ASSIGNMENT_POLL_SEC` (default 5s) when not fully assigned; `ASSIGNMENT_POLL_STABLE_SEC` (default 20s) when `checkpoint_valid`. Telemetry params are always included — `outboxDepth` (int, 0 if nothing queued), `lastSyncAt` (ISO string, omitted if sync hasn't run yet). Server persists both to `TimingNode.outbox_depth` + `TimingNode.last_sync_at`.
 
 ## EPC Normalization Contract
 
@@ -94,10 +94,15 @@ Pi is the primary dedup filter before any persist or sync:
 |---|---|
 | `200` accepted | Mark row `sent` |
 | `200` duplicate | Mark row `sent` (idempotent) |
-| `401 INVALID_API_KEY` | Pause all sync, raise critical alert, do not dead-letter |
-| `422 SEMANTICALLY_INVALID_TIMING_READ` with `EVENT_NOT_INGESTIBLE` | Surface as loud operator alert, do not silent dead-letter |
-| Other `422` | Mark row `dead_letter` |
-| `429 / 5xx / network error` | Exponential backoff + jitter, retry |
+| `401 INVALID_API_KEY` | Pause all sync (`NodeState.auth_failed`), critical alert, never dead-letter; reads stay `queued`. Cleared only by restart (key is fixed at boot). |
+| `422 SEMANTICALLY_INVALID_TIMING_READ` | Keep row `queued` + `NodeState.ingest_blocked` flag + loud alert (once per blocked stretch). Dominant case is event-not-live; flushes when the event goes live. **All** 422s are kept, not dead-lettered — the server emits a single 422 code (sub-reason is in `details`, not the code), and a node must never destroy a physical read over a server-side status/config issue. |
+| `409` | Mark `sent` (idempotent; duplicates actually return `200 isDuplicate=true`). |
+| `429 RATE_LIMITED` | Keep row `queued`, retry next cycle — never dead-letter (this was a data-loss bug: 429 previously fell into the generic 4xx dead-letter branch). |
+| Other `4xx` (e.g. `400 INVALID_PAYLOAD`, `404`) | Mark row `dead_letter` (genuine non-retryable bad payload). |
+| `5xx / network error` | Increment `retry_count`; dead-letter after `SYNC_MAX_RETRIES`. |
+
+Classification lives in `sync_loop.classify_response()` (pure, unit-tested) returning one of
+`SENT / KEEP / RETRY / DEAD / PAUSE`; `run_sync_loop` applies the action.
 
 Dead-letter caps:
 - Max `10,000` dead-letter rows. Oldest auto-purged when exceeded.
@@ -121,12 +126,18 @@ Provide physical status feedback for race-day operators standing at the mat (no 
 ## Current implementation (skeleton)
 
 - **Entry:** `main.py` — loads optional `/etc/royalmnl-timing-node.env` via `config.load_env_overlays()`, validates `TIMING_NODE_ID` + `TIMING_API_BASE_URL` + `TIMING_API_KEY`, acquires lock `TIMING_LOCK_FILE` (default `/var/run/timing-node.lock`), opens SQLite at `TIMING_DB_PATH` (default `~/.royalmnl-timing/outbox.db`), runs clock check, starts **reader** + **network** daemon threads.
-- **State:** `node_state.py` — `NodeState` with `ReaderState` / `NetworkState` enums; thread-safe getters/setters.
+- **State:** `node_state.py` — `NodeState` with `ReaderState` / `NetworkState` enums; thread-safe getters/setters. Phase 4 added `last_sync_at: Optional[str]` with `get_last_sync_at()` / `set_last_sync_at()`. Phase 5 added `reader_stalled: bool` with `set_reader_stalled()` / `is_reader_stalled()`.
 - **Config:** `config.py` — env keys: `READER_IP`, `READER_PORT`, `DEDUPE_WINDOW_SEC`, `ASSIGNMENT_POLL_SEC`, `ASSIGNMENT_POLL_STABLE_SEC`, `TIMING_LOG_LEVEL`, `TIMING_DB_PATH`, `TIMING_LOCK_FILE`.
 - **DB:** `db.py` — `meta`, `reads`, `outbox` tables; WAL; `insert_tag_read`, `backfill_assignment` (when UI assigns node to checkpoint).
-- **Reader:** `reader_loop.py` + `reader_protocol.py` — A0 protocol from `test_reader` baseline; time-window dedupe; writes to outbox.
-- **Network:** `network_loop.py` — `GET /health` then assignment endpoint; exponential backoff on failure; backfills pending rows when assignment appears.
-- **Not yet implemented:** HTTP sync worker (POST `/read` or bulk), dead-letter cap job, GPIO, graceful SQLite drain on SIGTERM (flag exists; full drain TBD).
+- **Reader:** `reader_loop.py` + `reader_protocol.py` — A0 protocol from `test_reader` baseline; time-window dedupe; writes to outbox. Phase 5 added: (a) **liveness watchdog** — if no tags arrive for `READER_STALL_SEC` (default 120s), `reader_stalled=True` + force reconnect; stalled flag cleared on next CAPTURING entry; (b) **dedup eviction** — entries older than `DEDUPE_WINDOW_SEC` purged at round start (bounds map size over 10h+ races); (c) **re-key on backfill** — when assignment transitions from pending to valid, `__pending__` dedup keys are re-keyed to `(te_id, cp_id, epc)`, carrying the window over the boundary to prevent double-capture.
+- **Network:** `network_loop.py` — `GET /health` then assignment endpoint with telemetry params (`?outboxDepth=<n>&lastSyncAt=<iso>`); exponential backoff on failure; backfills pending rows when assignment appears. Telemetry: reads `get_outbox_depth` from SQLite + `state.get_last_sync_at()` before every assignment poll — server persists these to `TimingNode`.
+- **Sync:** `sync_loop.py` — bulk POST `/api/v1/timing/reads` (max `SYNC_BATCH_SIZE`); `classify_response()` for top-level errors; `_classify_item()` for per-item partial-success; `_run_maintenance()` fires every `SYNC_PURGE_INTERVAL_SEC` (default 300s) to purge old rows. Phase 4: calls `state.set_last_sync_at(utc_now_iso_ms())` after each successful flush (zero-item pass OR at least one row sent).
+- **DB purge helpers** (`db.py`): `purge_sent_rows(conn, ttl_sec)`, `purge_stale_dead_rows(conn, ttl_sec)`, `cap_dead_letter_rows(conn, cap)`, `purge_old_reads(conn, ttl_sec)`. Telemetry helpers: `get_outbox_depth(conn)` (counts `queued` + `assignment_pending=0`), `get_oldest_queued_read_at(conn)`.
+- **Purge config** (env vars + defaults): `SYNC_SENT_TTL_SEC=3600`, `SYNC_DEAD_TTL_SEC=86400`, `SYNC_DEAD_CAP=10000`, `SYNC_PURGE_INTERVAL_SEC=300`, `SYNC_READS_TTL_SEC=604800`.
+- **Reader hardening config** (env vars + defaults): `READER_STALL_SEC=120` (seconds of tag silence before stall reconnect).
+- **Tests:** `tests/` — stdlib race-day harness: `fake_reader.py`, `fake_backend.py`, `test_phase1.py` (sync errors + reader power), `test_phase2.py` (bulk throughput), `test_phase3.py` (purge: old sent/dead/reads deleted; cap enforced; maintenance tick fires in loop; outbox bounded across race rounds), `test_phase4.py` (telemetry: `outboxDepth` + `lastSyncAt` in every assignment GET; depth tracks outbox state; `lastSyncAt` absent before flush, present after; both stable under 422/401 blocks), `test_phase5.py` (stall watchdog fires + leaves CAPTURING; eviction allows re-read after window; re-key prevents double-capture across pending→assigned; stall clears after recovery). Run each with `python tests/test_phaseN.py`.
+- **Deployment:** `deploy/` — `royalmnl-timing-node.service` (systemd unit: `After=network-online.target time-sync.target`, `Restart=on-failure`, `TimeoutStopSec=75`, `EnvironmentFile=/etc/royalmnl-timing-node.env`); `royalmnl-timing-node.env.template` (all env vars with defaults + comments); `INSTALL.md` (clone → env file → install unit → verify → troubleshooting table). Lock file path updated to use `RuntimeDirectory` (`/run/royalmnl-timing-node/timing-node.lock`).
+- **Not yet implemented:** GPIO/LED dropped — no hardware.
 
 ## Guardrails
 

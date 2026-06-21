@@ -108,7 +108,9 @@ CMD_FAST_SWITCH_INVENTORY_8 = build_command(
 CMD_GET_WORK_ANTENNA = build_command(0x75, [])
 
 setup_sequence = {
-    "Set Temp Output Power (10dBm)": (build_command(0x66, [0x0A]), 0.5),
+    # 26 dBm finish-line power. 10 dBm (0x0A) was a bench value with sub-meter range.
+    # If the reader caps lower, the "Get Output Power" health reply below shows the clamp.
+    "Set Temp Output Power (26dBm)": (build_command(0x66, [0x1A]), 0.5),
     "Set Beeper Quiet": (build_command(0x7A, [0x00]), 0.10),
     "Set RF Link Profile": (build_command(0x69, [0xD1]), 1),
 }

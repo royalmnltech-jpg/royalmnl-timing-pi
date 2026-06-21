@@ -64,6 +64,12 @@ class NodeConfig:
     sync_batch_size: int
     sync_interval_sec: float
     sync_max_retries: int
+    sync_sent_ttl_sec: float
+    sync_dead_ttl_sec: float
+    sync_dead_cap: int
+    sync_purge_interval_sec: float
+    sync_reads_ttl_sec: float
+    reader_stall_sec: float
 
 
 def load_config() -> NodeConfig:
@@ -88,6 +94,12 @@ def load_config() -> NodeConfig:
     sync_batch_size = int(os.environ.get("SYNC_BATCH_SIZE", "50"))
     sync_interval_sec = float(os.environ.get("SYNC_INTERVAL_SEC", "1.5"))
     sync_max_retries = int(os.environ.get("SYNC_MAX_RETRIES", "5"))
+    sync_sent_ttl_sec = float(os.environ.get("SYNC_SENT_TTL_SEC", "3600"))
+    sync_dead_ttl_sec = float(os.environ.get("SYNC_DEAD_TTL_SEC", "86400"))
+    sync_dead_cap = int(os.environ.get("SYNC_DEAD_CAP", "10000"))
+    sync_purge_interval_sec = float(os.environ.get("SYNC_PURGE_INTERVAL_SEC", "300"))
+    sync_reads_ttl_sec = float(os.environ.get("SYNC_READS_TTL_SEC", "604800"))
+    reader_stall_sec = float(os.environ.get("READER_STALL_SEC", "120"))
 
     return NodeConfig(
         timing_node_id=timing_node_id,
@@ -104,6 +116,12 @@ def load_config() -> NodeConfig:
         sync_batch_size=sync_batch_size,
         sync_interval_sec=sync_interval_sec,
         sync_max_retries=sync_max_retries,
+        sync_sent_ttl_sec=sync_sent_ttl_sec,
+        sync_dead_ttl_sec=sync_dead_ttl_sec,
+        sync_dead_cap=sync_dead_cap,
+        sync_purge_interval_sec=sync_purge_interval_sec,
+        sync_reads_ttl_sec=sync_reads_ttl_sec,
+        reader_stall_sec=reader_stall_sec,
     )
 
 

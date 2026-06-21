@@ -40,6 +40,19 @@ class NodeState:
     last_health_ok_mono: float = 0.0
     shutdown_requested: bool = False
     os_poweroff_requested: bool = False
+    # Set when the backend rejects our API key (401). Sync pauses while true so we
+    # neither hammer the server nor dead-letter reads; cleared only by restart (key is
+    # fixed at boot). Reads stay queued and flush once the key is corrected.
+    auth_failed: bool = False
+    # Set when the backend reports the event is not ingestible (422). Reads stay queued
+    # and flush once an operator flips the event live; surfaced for operator visibility.
+    ingest_blocked: bool = False
+    # UTC ISO timestamp of the most recent successful outbox flush. None until first sync.
+    # Network loop attaches this to every assignment poll for server-side telemetry.
+    last_sync_at: Optional[str] = None
+    # Set when the reader is TCP-connected but emitting no tags beyond the stall window.
+    # Forces a reconnect; surfaced to telemetry so operators see a dark-but-connected reader.
+    reader_stalled: bool = False
 
     def set_reader_state(self, state: ReaderState) -> None:
         with self.lock:
@@ -105,6 +118,22 @@ class NodeState:
         with self.lock:
             return self.shutdown_requested
 
+    def set_auth_failed(self, failed: bool) -> None:
+        with self.lock:
+            self.auth_failed = failed
+
+    def is_auth_failed(self) -> bool:
+        with self.lock:
+            return self.auth_failed
+
+    def set_ingest_blocked(self, blocked: bool) -> None:
+        with self.lock:
+            self.ingest_blocked = blocked
+
+    def is_ingest_blocked(self) -> bool:
+        with self.lock:
+            return self.ingest_blocked
+
     def request_os_poweroff(self) -> None:
         with self.lock:
             self.shutdown_requested = True
@@ -113,6 +142,22 @@ class NodeState:
     def is_os_poweroff_requested(self) -> bool:
         with self.lock:
             return self.os_poweroff_requested
+
+    def set_last_sync_at(self, iso: Optional[str]) -> None:
+        with self.lock:
+            self.last_sync_at = iso
+
+    def get_last_sync_at(self) -> Optional[str]:
+        with self.lock:
+            return self.last_sync_at
+
+    def set_reader_stalled(self, stalled: bool) -> None:
+        with self.lock:
+            self.reader_stalled = stalled
+
+    def is_reader_stalled(self) -> bool:
+        with self.lock:
+            return self.reader_stalled
 
     def touch_assignment_check(self, mono: float) -> None:
         with self.lock:

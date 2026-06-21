@@ -13,7 +13,7 @@ import urllib.request
 from typing import Any, Optional
 
 from config import NodeConfig
-from db import backfill_assignment
+from db import backfill_assignment, get_outbox_depth
 from node_state import NetworkState, NodeState
 
 
@@ -69,7 +69,17 @@ def run_network_loop(
                     raise RuntimeError(f"health HTTP {hresp.status}")
             state.touch_health_ok(time.monotonic())
 
-            status, payload = _get_json(assign_url, cfg.timing_api_key)
+            # Attach Pi telemetry so the server can persist queue depth + last-sync timestamp.
+            with db_lock:
+                _tconn = conn_holder.get("conn")
+                _depth = get_outbox_depth(_tconn) if _tconn else 0
+            _telem: dict[str, str] = {"outboxDepth": str(_depth)}
+            _last_sync = state.get_last_sync_at()
+            if _last_sync:
+                _telem["lastSyncAt"] = _last_sync
+            assign_url_poll = f"{assign_url}?{urllib.parse.urlencode(_telem)}"
+
+            status, payload = _get_json(assign_url_poll, cfg.timing_api_key)
             if status != 200:
                 raise RuntimeError(f"assignment HTTP {status}")
 

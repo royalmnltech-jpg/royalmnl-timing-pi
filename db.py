@@ -6,7 +6,7 @@ import json
 import logging
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -158,6 +158,18 @@ def mark_read_dead(conn: sqlite3.Connection, row_id: str, reason: str) -> None:
     )
 
 
+def mark_reads_sent_bulk(conn: sqlite3.Connection, row_ids: list[str]) -> None:
+    """Mark multiple outbox rows sent in a single statement."""
+    if not row_ids:
+        return
+    now = utc_now_iso_ms()
+    placeholders = ",".join("?" * len(row_ids))
+    conn.execute(
+        f"UPDATE outbox SET status = 'sent', sent_at = ? WHERE id IN ({placeholders})",
+        [now, *row_ids],
+    )
+
+
 def increment_retry(conn: sqlite3.Connection, row_id: str) -> int:
     """Increment retry_count; return the new count."""
     conn.execute(
@@ -167,6 +179,76 @@ def increment_retry(conn: sqlite3.Connection, row_id: str) -> int:
     cur = conn.execute("SELECT retry_count FROM outbox WHERE id = ?", (row_id,))
     row = cur.fetchone()
     return row["retry_count"] if row else 0
+
+
+def _seconds_ago_iso(age_sec: float) -> str:
+    dt = datetime.now(timezone.utc) - timedelta(seconds=age_sec)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S") + f".{dt.microsecond // 1000:03d}Z"
+
+
+def purge_sent_rows(conn: sqlite3.Connection, max_age_sec: float) -> int:
+    """Delete sent outbox rows older than max_age_sec. Returns count deleted."""
+    cur = conn.execute(
+        "DELETE FROM outbox WHERE status = 'sent' AND sent_at < ?",
+        (_seconds_ago_iso(max_age_sec),),
+    )
+    return cur.rowcount or 0
+
+
+def purge_stale_dead_rows(conn: sqlite3.Connection, max_age_sec: float) -> int:
+    """Delete dead-letter rows older than max_age_sec. Returns count deleted."""
+    cur = conn.execute(
+        "DELETE FROM outbox WHERE status = 'dead' AND created_at < ?",
+        (_seconds_ago_iso(max_age_sec),),
+    )
+    return cur.rowcount or 0
+
+
+def cap_dead_letter_rows(conn: sqlite3.Connection, cap: int) -> int:
+    """Keep only the `cap` most-recent dead rows; delete oldest excess. Returns count deleted."""
+    cur = conn.execute(
+        """
+        DELETE FROM outbox
+        WHERE status = 'dead'
+          AND id NOT IN (
+              SELECT id FROM outbox WHERE status = 'dead'
+              ORDER BY created_at DESC LIMIT ?
+          )
+        """,
+        (cap,),
+    )
+    return cur.rowcount or 0
+
+
+def purge_old_reads(conn: sqlite3.Connection, max_age_sec: float) -> int:
+    """Delete raw reads older than max_age_sec. Returns count deleted."""
+    cur = conn.execute(
+        "DELETE FROM reads WHERE created_at < ?",
+        (_seconds_ago_iso(max_age_sec),),
+    )
+    return cur.rowcount or 0
+
+
+def get_outbox_depth(conn: sqlite3.Connection) -> int:
+    """Count queued rows ready to sync (excludes assignment_pending). For P4 telemetry."""
+    cur = conn.execute(
+        "SELECT COUNT(*) FROM outbox WHERE status = 'queued' AND assignment_pending = 0"
+    )
+    row = cur.fetchone()
+    return row[0] if row else 0
+
+
+def get_oldest_queued_read_at(conn: sqlite3.Connection) -> Optional[str]:
+    """Return read_at of oldest ready-to-sync queued row. None if queue empty. For P4 telemetry."""
+    cur = conn.execute(
+        """
+        SELECT read_at FROM outbox
+        WHERE status = 'queued' AND assignment_pending = 0
+        ORDER BY read_at ASC LIMIT 1
+        """
+    )
+    row = cur.fetchone()
+    return row[0] if row else None
 
 
 def backfill_assignment(

@@ -20,6 +20,28 @@ from reader_protocol import (
 )
 
 
+def _rekey_pending_dedup(
+    dedupe_last: dict,
+    te_id: str,
+    cp_id: str,
+    log: logging.Logger,
+) -> None:
+    """Move __pending__ dedup entries to real assignment keys on backfill.
+
+    Carries the dedup window over the pending→assigned boundary so an EPC read while
+    pending and then re-read within the window after assignment arrives is not double-captured.
+    """
+    pending = [k for k in dedupe_last if k[0] == "__pending__" or k[1] == "__pending__"]
+    for k in pending:
+        new_key = (te_id, cp_id, k[2])
+        old_ts = dedupe_last.pop(k)
+        existing_ts = dedupe_last.get(new_key)
+        if existing_ts is None or old_ts > existing_ts:
+            dedupe_last[new_key] = old_ts
+    if pending:
+        log.debug("Dedup re-key: %d pending → (%s, %s)", len(pending), te_id, cp_id)
+
+
 def run_reader_loop(
     state: NodeState,
     cfg: NodeConfig,
@@ -42,9 +64,43 @@ def run_reader_loop(
             cmd, inv_bytes, label = select_inventory_mode(sock, log)
             log.info("Reader capture mode: %s", label)
             state.set_reader_state(ReaderState.CAPTURING)
+            state.set_reader_stalled(False)
             framer = A0Framer()
+            # last_tag_mono[0]: monotonic time of most recent tag seen (any tag, including deduped).
+            # Initialised to now so a fresh connection doesn't immediately trigger the stall watchdog.
+            last_tag_mono: list[float] = [time.monotonic()]
+            prev_cp_valid = False
 
             while not state.is_shutdown_requested():
+                round_start = time.monotonic()
+
+                # Assignment transition: pending → assigned.
+                # Re-key dedup entries so the dedup window carries over the boundary —
+                # prevents double-capture of an EPC first seen while pending.
+                te_id, cp_id, _, cp_valid, _ = state.get_assignment_snapshot()
+                if cp_valid and not prev_cp_valid and te_id and cp_id:
+                    _rekey_pending_dedup(dedupe_last, te_id, cp_id, log)
+                prev_cp_valid = cp_valid
+
+                # Evict dedup entries older than the window (bounds map size over long races).
+                if cfg.dedupe_window_sec > 0:
+                    stale = [
+                        k for k, ts in dedupe_last.items()
+                        if round_start - ts > cfg.dedupe_window_sec
+                    ]
+                    for k in stale:
+                        del dedupe_last[k]
+
+                # Liveness watchdog: TCP-connected but no tags for cfg.reader_stall_sec →
+                # force reconnect and surface the stall via NodeState for telemetry.
+                if round_start - last_tag_mono[0] > cfg.reader_stall_sec:
+                    log.warning(
+                        "Reader stall: no tags for %.0fs — forcing reconnect",
+                        cfg.reader_stall_sec,
+                    )
+                    state.set_reader_stalled(True)
+                    break
+
                 sock.sendall(inv_bytes)
                 deadline = time.monotonic() + INV_ROUND_TIMEOUT_SEC
 
@@ -54,11 +110,15 @@ def run_reader_loop(
                     if not epc:
                         return
 
+                    now_m = time.monotonic()
+                    # Update stall clock on every seen tag (even deduped ones —
+                    # the reader is alive and emitting; dedup is a logical filter).
+                    last_tag_mono[0] = now_m
+
                     te_id, cp_id, _, checkpoint_valid, _ = state.get_assignment_snapshot()
                     dedupe_key_te = te_id or "__pending__"
                     dedupe_key_cp = cp_id or "__pending__"
                     key = (dedupe_key_te, dedupe_key_cp, epc)
-                    now_m = time.monotonic()
                     last = dedupe_last.get(key)
                     if last is not None and (now_m - last) < cfg.dedupe_window_sec:
                         return

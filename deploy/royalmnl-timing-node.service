@@ -1,0 +1,46 @@
+[Unit]
+Description=RoyalMNL Timing Node
+Documentation=https://github.com/royalmnl/royalmnl-timing-pi
+# Wait for network and NTP before starting — the Pi's clock is untrusted until NTP syncs,
+# and the backend URL must be reachable on first assignment poll.
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+
+[Service]
+Type=simple
+# Replace <NODE_USER> with the OS user that owns the repo (e.g. royalmnl-1).
+# See deploy/INSTALL.md — Step 1 creates this user.
+User=<NODE_USER>
+Group=<NODE_USER>
+
+# Repo must be cloned at this path on the Pi.
+# Change both lines if installed elsewhere.
+WorkingDirectory=/home/<NODE_USER>/royalmnl-timing-pi
+ExecStart=/usr/bin/python3 /home/<NODE_USER>/royalmnl-timing-pi/main.py
+
+# All runtime config is in this env file. See royalmnl-timing-node.env.template.
+EnvironmentFile=/etc/royalmnl-timing-node.env
+
+# Restart on non-zero exit (crashes, unhandled exceptions).
+# Does not restart on clean exit (SIGTERM → state.request_shutdown → exit 0).
+Restart=on-failure
+RestartSec=5
+
+# Allow enough time for SIGTERM handler to:
+#   - join reader/network/sync threads (3 × 15s timeout each)
+#   - run WAL checkpoint
+# Exceeding this sends SIGKILL, which is safe (SQLite WAL survives it) but skips the checkpoint.
+TimeoutStopSec=75
+
+# Send structured logs to journald. View with:
+#   journalctl -u royalmnl-timing-node -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=royalmnl-timing-node
+
+# Runtime dir for lock file (writable by pi user without sudo)
+RuntimeDirectory=royalmnl-timing-node
+RuntimeDirectoryMode=0750
+
+[Install]
+WantedBy=multi-user.target
