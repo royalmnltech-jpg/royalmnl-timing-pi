@@ -241,7 +241,6 @@ To append new variables:
 sudo tee -a /etc/royalmnl-timing-node.env >/dev/null <<'EOF'
 FAST_SWITCH_ENABLED=1
 FAST_SWITCH_ANT_COUNT=auto
-WORK_ANTENNA_QUERY=0
 EOF
 ```
 
