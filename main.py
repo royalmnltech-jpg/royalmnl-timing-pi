@@ -132,6 +132,9 @@ def main() -> None:
         if state.is_os_poweroff_requested():
             log.warning("Initiating OS poweroff")
             subprocess.run(["sudo", "systemctl", "poweroff"], check=False)
+        elif state.is_service_restart_requested():
+            log.warning("Restarting royalmnl-timing-node service")
+            subprocess.run(["sudo", "systemctl", "restart", "royalmnl-timing-node"], check=False)
 
 
 if __name__ == "__main__":

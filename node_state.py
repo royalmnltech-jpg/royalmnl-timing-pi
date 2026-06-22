@@ -40,6 +40,7 @@ class NodeState:
     last_health_ok_mono: float = 0.0
     shutdown_requested: bool = False
     os_poweroff_requested: bool = False
+    service_restart_requested: bool = False
     # Set when the backend rejects our API key (401). Sync pauses while true so we
     # neither hammer the server nor dead-letter reads; cleared only by restart (key is
     # fixed at boot). Reads stay queued and flush once the key is corrected.
@@ -142,6 +143,15 @@ class NodeState:
     def is_os_poweroff_requested(self) -> bool:
         with self.lock:
             return self.os_poweroff_requested
+
+    def request_service_restart(self) -> None:
+        with self.lock:
+            self.shutdown_requested = True
+            self.service_restart_requested = True
+
+    def is_service_restart_requested(self) -> bool:
+        with self.lock:
+            return self.service_restart_requested
 
     def set_last_sync_at(self, iso: Optional[str]) -> None:
         with self.lock:

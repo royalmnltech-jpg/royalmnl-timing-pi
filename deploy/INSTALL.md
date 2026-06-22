@@ -79,8 +79,8 @@ Copy from the template and open for editing:
 sudo cp ~/royalmnl-timing-pi/deploy/royalmnl-timing-node.env.template \
         /etc/royalmnl-timing-node.env
 
-sudo chown root:root /etc/royalmnl-timing-node.env
-sudo chmod 600 /etc/royalmnl-timing-node.env
+sudo chown root:<NODE_USER> /etc/royalmnl-timing-node.env
+sudo chmod 640 /etc/royalmnl-timing-node.env
 
 sudo nano /etc/royalmnl-timing-node.env
 ```

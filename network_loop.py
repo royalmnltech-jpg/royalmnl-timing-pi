@@ -90,6 +90,11 @@ def run_network_loop(
                 state.request_os_poweroff()
                 break
 
+            if isinstance(data, dict) and data.get("restartRequested"):
+                log.warning("Service restart requested by server — draining and restarting")
+                state.request_service_restart()
+                break
+
             assignment = data.get("assignment") if isinstance(data, dict) else None
 
             if assignment is None:
