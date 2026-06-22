@@ -20,11 +20,6 @@ FAST_SWITCH_ENABLED = os.environ.get("FAST_SWITCH_ENABLED", "1").strip().lower()
     "yes",
 )
 FAST_SWITCH_ANT_COUNT = os.environ.get("FAST_SWITCH_ANT_COUNT", "auto").strip().lower()
-WORK_ANTENNA_QUERY = os.environ.get("WORK_ANTENNA_QUERY", "0").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-)
 
 INV_ANT_PRIMARY = 0x00
 INV_STAY_PRIMARY = 0x0A
@@ -52,14 +47,10 @@ CMD_REALTIME_INVENTORY = build_command(0x89, [INV_REPEAT])
 CMD_FAST_SWITCH_INVENTORY_4 = build_command(
     0x8A,
     [
-        INV_ANT_PRIMARY,
-        INV_STAY_PRIMARY,
-        INV_ANT_UNUSED,
-        INV_STAY_UNUSED,
-        INV_ANT_UNUSED,
-        INV_STAY_UNUSED,
-        INV_ANT_UNUSED,
-        INV_STAY_UNUSED,
+        0x00, INV_STAY_PRIMARY,  # A = antenna 0
+        0x01, INV_STAY_PRIMARY,  # B = antenna 1
+        0x02, INV_STAY_PRIMARY,  # C = antenna 2
+        0x03, INV_STAY_PRIMARY,  # D = antenna 3
         INV_INTERVAL,
         INV_REPEAT_FAST,
     ],
@@ -105,7 +96,30 @@ CMD_FAST_SWITCH_INVENTORY_8 = build_command(
         INV_REPEAT_FAST,
     ],
 )
-CMD_GET_WORK_ANTENNA = build_command(0x75, [])
+_PROBE_STAY = 0x01  # 1 round per antenna; only used during mode selection probe
+_CMD_PROBE_8 = build_command(
+    0x8A,
+    [
+        0x00, _PROBE_STAY, 0x01, _PROBE_STAY, 0x02, _PROBE_STAY, 0x03, _PROBE_STAY,
+        0x04, _PROBE_STAY, 0x05, _PROBE_STAY, 0x06, _PROBE_STAY, 0x07, _PROBE_STAY,
+        INV_INTERVAL,
+        0x00, 0x00, 0x00, 0x00, 0x00,  # reserve0 (5 bytes)
+        INV_SESSION_S1, INV_TARGET_A,
+        0x00, 0x00, 0x00,              # reserve1..3
+        0x00, INV_REPEAT_FAST,         # phase disabled, repeat
+    ],
+)
+_CMD_PROBE_4 = build_command(
+    0x8A,
+    [
+        0x00, _PROBE_STAY,  # A = antenna 0
+        0x01, _PROBE_STAY,  # B = antenna 1
+        0x02, _PROBE_STAY,  # C = antenna 2
+        0x03, _PROBE_STAY,  # D = antenna 3
+        INV_INTERVAL,
+        INV_REPEAT_FAST,
+    ],
+)
 
 setup_sequence = {
     # 26 dBm finish-line power. 10 dBm (0x0A) was a bench value with sub-meter range.
@@ -122,31 +136,6 @@ HEALTH_CHECKS = {
     "Get Firmware Version": build_command(0x72, []),
     "Get Temperature": build_command(0x7B, []),
 }
-
-
-def parse_work_antenna_id(reply: bytes):
-    if len(reply) < 6 or reply[0] != 0xA0 or reply[3] != 0x75:
-        return None
-    return reply[4]
-
-
-def query_and_reapply_work_antenna(client: socket.socket, wait: float = 0.1) -> None:
-    client.sendall(CMD_GET_WORK_ANTENNA)
-    time.sleep(wait)
-    try:
-        reply = client.recv(1024)
-    except OSError:
-        return
-    ant_id = parse_work_antenna_id(reply)
-    if ant_id is None:
-        return
-    set_cmd = build_command(0x74, [ant_id])
-    client.sendall(set_cmd)
-    time.sleep(wait)
-    try:
-        client.recv(1024)
-    except OSError:
-        pass
 
 
 def parse_health_reply(name: str, reply: bytes) -> str:
@@ -303,8 +292,6 @@ def drain_inventory_round(
 
 def run_configuration_and_health(client: socket.socket, log) -> None:
     log.info("Reader configuration starting")
-    if WORK_ANTENNA_QUERY:
-        query_and_reapply_work_antenna(client)
     for name, (cmd_bytes, wait) in setup_sequence.items():
         client.sendall(cmd_bytes)
         time.sleep(wait)
@@ -395,16 +382,16 @@ def select_inventory_mode(sock: socket.socket, log) -> tuple[int, bytes, str]:
         return mode
 
     # auto: probe 8 first
-    ok8, fault8 = _probe_mode(sock, 0x8A, CMD_FAST_SWITCH_INVENTORY_8)
+    ok8, fault8 = _probe_mode(sock, 0x8A, _CMD_PROBE_8)
     if ok8 and (fault8 is None or int(fault8) <= 3):
-        # no high-port fault observed; likely 8-port capable
         log.info("Inventory mode selected: 0x8A-8ant (auto)")
         flush_tcp_input(sock)
         return 0x8A, CMD_FAST_SWITCH_INVENTORY_8, "0x8A-8ant"
     if ok8 and fault8 is not None and int(fault8) > 3:
         log.warning("8-ant probe fault on port %s; falling back to 4-ant mode", fault8)
 
-    ok4, _ = _probe_mode(sock, 0x8A, CMD_FAST_SWITCH_INVENTORY_4)
+    flush_tcp_input(sock)  # drain lingering 8-ant data before 4-ant probe
+    ok4, _ = _probe_mode(sock, 0x8A, _CMD_PROBE_4)
     if ok4:
         log.info("Inventory mode selected: 0x8A-4ant (auto)")
         flush_tcp_input(sock)
