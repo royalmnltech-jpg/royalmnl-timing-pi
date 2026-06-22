@@ -286,7 +286,7 @@ def drain_inventory_round(
             elif kind == "error":
                 return tags_printed, True
             elif kind == "ant_fault":
-                return tags_printed, True
+                pass  # mid-cycle; reader sends "done" after all antennas complete
     return tags_printed, False
 
 
