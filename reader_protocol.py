@@ -47,10 +47,14 @@ CMD_REALTIME_INVENTORY = build_command(0x89, [INV_REPEAT])
 CMD_FAST_SWITCH_INVENTORY_4 = build_command(
     0x8A,
     [
-        0x00, INV_STAY_PRIMARY,  # A = antenna 0
-        0x01, INV_STAY_PRIMARY,  # B = antenna 1
-        0x02, INV_STAY_PRIMARY,  # C = antenna 2
-        0x03, INV_STAY_PRIMARY,  # D = antenna 3
+        0x00,
+        INV_STAY_PRIMARY,  # A = antenna 0
+        0x01,
+        INV_STAY_PRIMARY,  # B = antenna 1
+        0x02,
+        INV_STAY_PRIMARY,  # C = antenna 2
+        0x03,
+        INV_STAY_PRIMARY,  # D = antenna 3
         INV_INTERVAL,
         INV_REPEAT_FAST,
     ],
@@ -100,32 +104,58 @@ _PROBE_STAY = 0x01  # 1 round per antenna; only used during mode selection probe
 _CMD_PROBE_8 = build_command(
     0x8A,
     [
-        0x00, _PROBE_STAY, 0x01, _PROBE_STAY, 0x02, _PROBE_STAY, 0x03, _PROBE_STAY,
-        0x04, _PROBE_STAY, 0x05, _PROBE_STAY, 0x06, _PROBE_STAY, 0x07, _PROBE_STAY,
+        0x00,
+        _PROBE_STAY,
+        0x01,
+        _PROBE_STAY,
+        0x02,
+        _PROBE_STAY,
+        0x03,
+        _PROBE_STAY,
+        0x04,
+        _PROBE_STAY,
+        0x05,
+        _PROBE_STAY,
+        0x06,
+        _PROBE_STAY,
+        0x07,
+        _PROBE_STAY,
         INV_INTERVAL,
-        0x00, 0x00, 0x00, 0x00, 0x00,  # reserve0 (5 bytes)
-        INV_SESSION_S1, INV_TARGET_A,
-        0x00, 0x00, 0x00,              # reserve1..3
-        0x00, INV_REPEAT_FAST,         # phase disabled, repeat
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,  # reserve0 (5 bytes)
+        INV_SESSION_S1,
+        INV_TARGET_A,
+        0x00,
+        0x00,
+        0x00,  # reserve1..3
+        0x00,
+        INV_REPEAT_FAST,  # phase disabled, repeat
     ],
 )
 _CMD_PROBE_4 = build_command(
     0x8A,
     [
-        0x00, _PROBE_STAY,  # A = antenna 0
-        0x01, _PROBE_STAY,  # B = antenna 1
-        0x02, _PROBE_STAY,  # C = antenna 2
-        0x03, _PROBE_STAY,  # D = antenna 3
+        0x00,
+        _PROBE_STAY,  # A = antenna 0
+        0x01,
+        _PROBE_STAY,  # B = antenna 1
+        0x02,
+        _PROBE_STAY,  # C = antenna 2
+        0x03,
+        _PROBE_STAY,  # D = antenna 3
         INV_INTERVAL,
         INV_REPEAT_FAST,
     ],
 )
-
+# claude --resume 6dd818a5-380f-4c5a-bb00-8229991c579f
 setup_sequence = {
     # 26 dBm finish-line power. 10 dBm (0x0A) was a bench value with sub-meter range.
     # If the reader caps lower, the "Get Output Power" health reply below shows the clamp.
     "Set Temp Output Power (26dBm)": (build_command(0x66, [0x1A]), 0.5),
-    "Set Beeper Quiet": (build_command(0x7A, [0x00]), 0.10),
+    "Set Beeper Mode": (build_command(0x7A, [0x00]), 0.10),
     "Set RF Link Profile": (build_command(0x69, [0xD1]), 1),
 }
 
@@ -328,7 +358,9 @@ def inventory_mode() -> tuple[int, bytes, str]:
     return 0x8B, CMD_SESSION_INVENTORY, "0x8B"
 
 
-def _probe_mode(sock: socket.socket, cmd: int, inv_bytes: bytes, timeout_sec: float = 0.8):
+def _probe_mode(
+    sock: socket.socket, cmd: int, inv_bytes: bytes, timeout_sec: float = 0.8
+):
     """Return (supported, ant_fault_port_if_any)."""
     framer = A0Framer()
     deadline = time.monotonic() + timeout_sec

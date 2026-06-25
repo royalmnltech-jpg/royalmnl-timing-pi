@@ -34,14 +34,23 @@ nc -vz 192.168.1.200 4000
 nmcli con show
 ```
 
-Then modify the active connection (the one with a `DEVICE` assigned — typically `eth0`):
+Find the UUID of the active connection — the one with a `DEVICE` assigned (not `--`):
+
+```
+NAME                UUID                                  TYPE      DEVICE
+eth0                b980d04b-xxxx-xxxx-xxxx-xxxxxxxxxxxx  ethernet  eth0   ← use this UUID
+eth0                39b3b891-xxxx-xxxx-xxxx-xxxxxxxxxxxx  ethernet  --     ← skip (no device)
+netplan-eth0        75a1216a-xxxx-xxxx-xxxx-xxxxxxxxxxxx  ethernet  --     ← skip (no device)
+```
+
+Use the UUID (not the name — multiple profiles may share the name `eth0`):
 
 ```bash
-nmcli con mod "eth0" \
+sudo nmcli con mod <UUID> \
   ipv4.method manual \
   ipv4.addresses "192.168.1.10/24"
 
-nmcli con up "eth0"
+sudo nmcli con up <UUID>
 ```
 
 Verify after applying:
