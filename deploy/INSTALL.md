@@ -65,7 +65,31 @@ nc -vz 192.168.1.200 4000
 
 ---
 
-## 2 — Clone the repo
+## 2 — Grant passwordless sudo for poweroff/restart
+
+The timing node service runs without a TTY. When the dashboard triggers a remote poweroff or service restart, the app calls `sudo systemctl poweroff` / `sudo systemctl restart royalmnl-timing-node`. Without a sudoers rule these fail silently.
+
+```bash
+sudo visudo -f /etc/sudoers.d/royalmnl-timing
+```
+
+Add (replace `royalmnl-1` with the actual `<NODE_USER>`):
+
+```
+royalmnl-1 ALL=(ALL) NOPASSWD: /usr/bin/systemctl poweroff, /usr/bin/systemctl reboot, /usr/bin/systemctl restart royalmnl-timing-node
+```
+
+Verify no syntax errors:
+
+```bash
+sudo visudo -c -f /etc/sudoers.d/royalmnl-timing
+```
+
+> If `which systemctl` returns `/bin/systemctl`, use `/bin/systemctl` in the rule above.
+
+---
+
+## 3 — Clone the repo
 
 ```bash
 git clone https://github.com/royalmnl/royalmnl-timing-pi.git \
@@ -80,7 +104,7 @@ ls ~/royalmnl-timing-pi/main.py
 
 ---
 
-## 3 — Create the env file
+## 4 — Create the env file
 
 Copy from the template and open for editing:
 
@@ -118,7 +142,7 @@ sudo cat /etc/royalmnl-timing-node.env
 
 ---
 
-## 4 — Install the systemd unit
+## 5 — Install the systemd unit
 
 Replace `<NODE_USER>` in the service file. Run while logged in as the node user — `$USER` expands automatically:
 
@@ -149,7 +173,7 @@ sudo systemctl cat royalmnl-timing-node.service
 
 ---
 
-## 5 — Pre-flight: manual run
+## 6 — Pre-flight: manual run
 
 Before enabling the service, run the app manually to confirm it starts:
 
@@ -170,7 +194,7 @@ Press `Ctrl+C` to stop. Fix any errors before continuing.
 
 ---
 
-## 6 — Enable and start
+## 7 — Enable and start
 
 ```bash
 sudo systemctl enable royalmnl-timing-node.service
@@ -179,7 +203,7 @@ sudo systemctl start royalmnl-timing-node.service
 
 ---
 
-## 7 — Verify it's running
+## 8 — Verify it's running
 
 ```bash
 systemctl status royalmnl-timing-node.service --no-pager
@@ -200,7 +224,7 @@ INFO [timing-node] Backend ONLINE — assigned event=te_xxx checkpoint=... v=1
 
 ---
 
-## 8 — Live logs
+## 9 — Live logs
 
 ```bash
 # Follow live output:
@@ -215,7 +239,7 @@ journalctl -u royalmnl-timing-node -b
 
 ---
 
-## 9 — Stop / restart / disable
+## 10 — Stop / restart / disable
 
 ```bash
 sudo systemctl stop royalmnl-timing-node       # graceful drain (up to 75s)
@@ -225,7 +249,7 @@ sudo systemctl disable royalmnl-timing-node    # remove from boot
 
 ---
 
-## 10 — Update the software
+## 11 — Update the software
 
 ```bash
 cd ~/royalmnl-timing-pi
@@ -242,7 +266,7 @@ journalctl -u royalmnl-timing-node.service -n 30 --no-pager
 
 ---
 
-## 11 — Adding or editing env vars
+## 12 — Adding or editing env vars
 
 To append new variables:
 
@@ -274,7 +298,7 @@ sudo nano /etc/royalmnl-timing-node.env
 
 ---
 
-## 12 — Migrating from an old setup
+## 13 — Migrating from an old setup
 
 ### From rc.local or cron @reboot
 
@@ -299,7 +323,7 @@ sudo pkill -f main.py
 
 If the unit was previously created via `systemctl edit --force --full`, it already exists
 at `/etc/systemd/system/royalmnl-timing-node.service`. Overwrite it with the `cp` command
-from Step 4, or edit it in place:
+from Step 5, or edit it in place:
 
 ```bash
 sudo systemctl edit --force --full royalmnl-timing-node.service
@@ -334,5 +358,6 @@ Run after first install and after any major software update:
 | 401 sync errors | `TIMING_API_KEY` mismatch; update env file and restart |
 | 422 sync errors | Event not in `live` status; flip event live in dashboard |
 | DB path error on start | Confirm `mkdir -p ~/.royalmnl-timing` was run and `TIMING_DB_PATH` has no `<NODE_USER>` literal |
-| Unit shows wrong User= | Run `sed` from Step 4 again; verify with `sudo systemctl cat royalmnl-timing-node.service` |
+| Remote poweroff does nothing | `journalctl` shows `sudo: a password is required` — sudoers rule missing; complete Step 2 |
+| Unit shows wrong User= | Run `sed` from Step 5 again; verify with `sudo systemctl cat royalmnl-timing-node.service` |
 | eth0 IP lost after reboot | Persistent NM config not applied; re-run `nmcli con mod` from Step 1 |
