@@ -77,9 +77,12 @@ def run_reader_loop(
                 # Assignment transition: pending → assigned.
                 # Re-key dedup entries so the dedup window carries over the boundary —
                 # prevents double-capture of an EPC first seen while pending.
+                # Reset stall clock so the watchdog starts fresh from assignment time,
+                # not from an arbitrary pre-assignment moment.
                 te_id, cp_id, _, cp_valid, _ = state.get_assignment_snapshot()
                 if cp_valid and not prev_cp_valid and te_id and cp_id:
                     _rekey_pending_dedup(dedupe_last, te_id, cp_id, log)
+                    last_tag_mono[0] = round_start
                 prev_cp_valid = cp_valid
 
                 # Evict dedup entries older than the window (bounds map size over long races).
@@ -93,7 +96,9 @@ def run_reader_loop(
 
                 # Liveness watchdog: TCP-connected but no tags for cfg.reader_stall_sec →
                 # force reconnect and surface the stall via NodeState for telemetry.
-                if round_start - last_tag_mono[0] > cfg.reader_stall_sec:
+                # Only active when a valid assignment exists — pre-race idle (no assignment)
+                # produces no tags by design and must not trigger spurious reconnects.
+                if cp_valid and round_start - last_tag_mono[0] > cfg.reader_stall_sec:
                     log.warning(
                         "Reader stall: no tags for %.0fs — forcing reconnect",
                         cfg.reader_stall_sec,
