@@ -167,6 +167,33 @@ HEALTH_CHECKS = {
     "Get Temperature": build_command(0x7B, []),
 }
 
+_CMD_GET_TEMPERATURE = build_command(0x7B, [])
+_PROBE_TIMEOUT_SEC = 2.0
+
+
+def probe_reader_alive(sock: socket.socket, log) -> bool:
+    """Send a Get Temperature command and wait up to 2s for any response.
+
+    Returns True if the reader replies (alive), False on timeout or error (hung).
+    Restores the socket timeout to 0.05s before returning so the inventory loop
+    can resume normally.
+    """
+    try:
+        flush_tcp_input(sock)
+        sock.settimeout(_PROBE_TIMEOUT_SEC)
+        sock.sendall(_CMD_GET_TEMPERATURE)
+        reply = sock.recv(1024)
+        if reply:
+            log.debug("Reader probe OK (temperature reply: %s bytes)", len(reply))
+            return True
+        log.warning("Reader probe: connection closed by reader")
+        return False
+    except OSError as e:
+        log.warning("Reader probe failed: %s", e)
+        return False
+    finally:
+        sock.settimeout(0.05)
+
 
 def parse_health_reply(name: str, reply: bytes) -> str:
     hex_list = reply.hex("-").upper().split("-")

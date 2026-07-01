@@ -15,6 +15,7 @@ from reader_protocol import (
     INV_ROUND_TIMEOUT_SEC,
     POLL_PAUSE_SEC,
     drain_inventory_round,
+    probe_reader_alive,
     run_configuration_and_health,
     select_inventory_mode,
 )
@@ -94,17 +95,24 @@ def run_reader_loop(
                     for k in stale:
                         del dedupe_last[k]
 
-                # Liveness watchdog: TCP-connected but no tags for cfg.reader_stall_sec →
-                # force reconnect and surface the stall via NodeState for telemetry.
+                # Liveness watchdog: TCP-connected but no tags for cfg.reader_stall_sec.
                 # Only active when a valid assignment exists — pre-race idle (no assignment)
                 # produces no tags by design and must not trigger spurious reconnects.
+                # Probe before reconnecting: a silent checkpoint (no runners) looks identical
+                # to a hung reader. Send Get Temperature and wait up to 2s for a reply.
+                # Reconnect only if the reader fails to respond.
                 if cp_valid and round_start - last_tag_mono[0] > cfg.reader_stall_sec:
                     log.warning(
-                        "Reader stall: no tags for %.0fs — forcing reconnect",
+                        "No tags for %.0fs — probing reader before reconnect",
                         cfg.reader_stall_sec,
                     )
-                    state.set_reader_stalled(True)
-                    break
+                    if probe_reader_alive(sock, log):
+                        log.info("Reader probe OK — alive, resetting stall clock")
+                        last_tag_mono[0] = time.monotonic()
+                    else:
+                        log.warning("Reader probe failed — reader hung, reconnecting")
+                        state.set_reader_stalled(True)
+                        break
 
                 sock.sendall(inv_bytes)
                 deadline = time.monotonic() + INV_ROUND_TIMEOUT_SEC
