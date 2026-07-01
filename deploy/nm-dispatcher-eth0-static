@@ -1,0 +1,34 @@
+#!/bin/bash
+# nm-dispatcher-eth0-static
+# NetworkManager dispatcher script — self-heals eth0 static IP on reconnect.
+#
+# Install to: /etc/NetworkManager/dispatcher.d/10-royalmnl-eth0-static
+# Permissions: chmod 755, chown root:root
+#
+# NM calls this with $1=interface $2=action on every network state change.
+# We only act when eth0 comes up and the IP is wrong.
+
+IFACE=$1
+EVENT=$2
+TARGET_IP="192.168.1.10/24"
+
+# Only handle eth0 up events
+[ "$IFACE" = "eth0" ] && [ "$EVENT" = "up" ] || exit 0
+
+# Guard: IP already correct — exit immediately (prevents loop after con up below)
+CURRENT=$(ip -4 addr show eth0 2>/dev/null | awk '/inet /{print $2; exit}')
+[ "$CURRENT" = "$TARGET_IP" ] && exit 0
+
+# Find UUID of the currently-active connection on eth0
+UUID=$(nmcli -t -f UUID,DEVICE con show --active 2>/dev/null \
+  | awk -F: '$2=="eth0"{print $1; exit}')
+[ -z "$UUID" ] && exit 0
+
+# Apply static IP (no gateway/DNS — wlan0 handles internet)
+nmcli con mod "$UUID" \
+  ipv4.method manual \
+  ipv4.addresses "$TARGET_IP" \
+  ipv4.gateway "" \
+  ipv4.dns ""
+
+nmcli con up "$UUID"

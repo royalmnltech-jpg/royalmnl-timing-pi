@@ -7,34 +7,48 @@ via Raspberry Pi Imager (e.g. `royalmnl-1`, `royalmnl-2`).
 
 ## 1 — Set static IP on eth0 (reader subnet)
 
-The RFID reader is on `192.168.1.x`. The Pi's eth0 must be on the same subnet.
-wlan0 handles internet — no gateway needed on eth0.
+The RFID reader is on `192.168.1.x`. The Pi's eth0 must be on `192.168.1.10/24`.
+wlan0 handles internet — no gateway or DNS needed on eth0.
 
-**Test first (temporary, lost on reboot):**
+**Plug in the LAN cable first**, then run the setup script:
 
 ```bash
-sudo ip addr flush dev eth0
-sudo ip addr add 192.168.1.10/24 dev eth0
-sudo ip link set eth0 up
+bash ~/royalmnl-timing-pi/deploy/setup-eth0-static.sh
 ```
 
-**Verify connectivity to reader:**
+This script:
+- Auto-detects the active eth0 connection UUID (no manual UUID lookup needed)
+- Stamps `192.168.1.10/24` as a static IP with no gateway
+- Deletes stale eth0 profiles so NetworkManager always activates the right one
+
+**Install the self-healing dispatcher** (re-applies static IP automatically on cable reconnect):
+
+```bash
+sudo cp ~/royalmnl-timing-pi/deploy/nm-dispatcher-eth0-static \
+        /etc/NetworkManager/dispatcher.d/10-royalmnl-eth0-static
+sudo chmod 755 /etc/NetworkManager/dispatcher.d/10-royalmnl-eth0-static
+sudo chown root:root /etc/NetworkManager/dispatcher.d/10-royalmnl-eth0-static
+```
+
+**Verify:**
 
 ```bash
 ip -4 addr show eth0
-ip route get 192.168.1.200
-ping 192.168.1.200
+ping -c 2 192.168.1.200
 nc -vz 192.168.1.200 4000
 ```
 
-**Make it persistent with NetworkManager** (Raspberry Pi OS Bookworm+):
+---
 
-```bash
-# Find the eth0 connection profile name
-nmcli con show
-```
+### Troubleshooting: manual UUID approach
+
+If the script fails (e.g. eth0 not yet active), you can set the static IP manually.
 
 Find the UUID of the active connection — the one with a `DEVICE` assigned (not `--`):
+
+```bash
+nmcli con show
+```
 
 ```
 NAME                UUID                                  TYPE      DEVICE
@@ -48,17 +62,11 @@ Use the UUID (not the name — multiple profiles may share the name `eth0`):
 ```bash
 sudo nmcli con mod <UUID> \
   ipv4.method manual \
-  ipv4.addresses "192.168.1.10/24"
+  ipv4.addresses "192.168.1.10/24" \
+  ipv4.gateway "" \
+  ipv4.dns ""
 
 sudo nmcli con up <UUID>
-```
-
-Verify after applying:
-
-```bash
-ip -4 addr show eth0
-ping 192.168.1.200
-nc -vz 192.168.1.200 4000
 ```
 
 > **Note:** `dhcpcd.conf` is the old method (Bullseye and earlier) — it has no effect on Bookworm.
@@ -360,4 +368,5 @@ Run after first install and after any major software update:
 | DB path error on start | Confirm `mkdir -p ~/.royalmnl-timing` was run and `TIMING_DB_PATH` has no `<NODE_USER>` literal |
 | Remote poweroff does nothing | `journalctl` shows `sudo: a password is required` — sudoers rule missing; complete Step 2 |
 | Unit shows wrong User= | Run `sed` from Step 5 again; verify with `sudo systemctl cat royalmnl-timing-node.service` |
-| eth0 IP lost after reboot | Persistent NM config not applied; re-run `nmcli con mod` from Step 1 |
+| eth0 IP lost after reboot | Persistent NM config not applied; re-run `setup-eth0-static.sh` from Step 1 |
+| eth0 IP lost after cable replug | Dispatcher not installed; complete the dispatcher install step in Step 1 |
