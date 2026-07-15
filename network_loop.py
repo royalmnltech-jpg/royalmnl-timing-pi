@@ -12,6 +12,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Optional
 
+from clock_check import is_clock_trusted
 from config import NodeConfig
 from db import backfill_assignment, get_outbox_depth
 from node_state import NetworkState, NodeState
@@ -58,8 +59,19 @@ def run_network_loop(
     prev_cp: Optional[str] = None
     prev_ver: Optional[int] = None
     prev_net_state: Optional[NetworkState] = None
+    last_clock_check_mono = 0.0
 
     while not state.is_shutdown_requested():
+        # Periodic clock-trust re-check, independent of the reader/capture path.
+        # is_clock_trusted() previously only ran once at boot (main.py); a clock
+        # that drifts or loses NTP mid-race went undetected until a restart.
+        # Piggybacked here (not a new thread) since this loop already runs on a
+        # short, steady cadence and this check never touches the reader socket.
+        now_mono = time.monotonic()
+        if now_mono - last_clock_check_mono >= cfg.clock_recheck_sec:
+            state.set_clock_trusted(is_clock_trusted(log))
+            last_clock_check_mono = now_mono
+
         state.set_network_state(NetworkState.PROBING)
         log.debug("Probing backend: %s", health_url)
         try:

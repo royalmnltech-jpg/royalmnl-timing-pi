@@ -150,7 +150,6 @@ _CMD_PROBE_4 = build_command(
         INV_REPEAT_FAST,
     ],
 )
-# claude --resume 6dd818a5-380f-4c5a-bb00-8229991c579f
 setup_sequence = {
     # 26 dBm finish-line power. 10 dBm (0x0A) was a bench value with sub-meter range.
     # If the reader caps lower, the "Get Output Power" health reply below shows the clamp.

@@ -70,6 +70,7 @@ class NodeConfig:
     sync_purge_interval_sec: float
     sync_reads_ttl_sec: float
     reader_stall_sec: float
+    clock_recheck_sec: float
 
 
 def load_config() -> NodeConfig:
@@ -100,6 +101,7 @@ def load_config() -> NodeConfig:
     sync_purge_interval_sec = float(os.environ.get("SYNC_PURGE_INTERVAL_SEC", "300"))
     sync_reads_ttl_sec = float(os.environ.get("SYNC_READS_TTL_SEC", "604800"))
     reader_stall_sec = float(os.environ.get("READER_STALL_SEC", "120"))
+    clock_recheck_sec = float(os.environ.get("CLOCK_RECHECK_SEC", "60"))
 
     return NodeConfig(
         timing_node_id=timing_node_id,
@@ -122,6 +124,7 @@ def load_config() -> NodeConfig:
         sync_purge_interval_sec=sync_purge_interval_sec,
         sync_reads_ttl_sec=sync_reads_ttl_sec,
         reader_stall_sec=reader_stall_sec,
+        clock_recheck_sec=clock_recheck_sec,
     )
 
 
